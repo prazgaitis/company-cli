@@ -1,0 +1,3 @@
+#!/bin/bash
+cd /Users/paulius/code/company-cli
+exec uv run python main.py "$@"
