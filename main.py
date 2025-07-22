@@ -10,6 +10,10 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.spinner import Spinner
+import threading
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -119,17 +123,28 @@ def send_email(subject: str, body: str, to_email: str):
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
     
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(from_email, password)
-        text = msg.as_string()
-        server.sendmail(from_email, to_email, text)
-        server.quit()
-        typer.echo(f"Email sent successfully to {to_email}")
-    except Exception as e:
-        typer.echo(f"Error sending email: {e}", err=True)
-        raise typer.Exit(1)
+    console = Console()
+    
+    def send_email_task():
+        try:
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(from_email, password)
+            text = msg.as_string()
+            server.sendmail(from_email, to_email, text)
+            server.quit()
+            return True
+        except Exception as e:
+            console.print(f"Error sending email: {e}", style="red")
+            raise typer.Exit(1)
+    
+    # Show spinner while sending email
+    with console.status("[bold green]Sending email...", spinner="dots"):
+        success = send_email_task()
+        if success:
+            time.sleep(0.5)  # Brief pause to show completion
+    
+    console.print(f"✅ Email sent successfully to {to_email}", style="green")
 
 @app.command()
 def send_journal(date: str = typer.Option(None, help="Date in YYYY-MM-DD format, defaults to today")):
@@ -159,7 +174,7 @@ def send_journal(date: str = typer.Option(None, help="Date in YYYY-MM-DD format,
     entry_date = datetime.strptime(date, "%Y-%m-%d").date()
     days_elapsed = (entry_date - start_date).days
     
-    subject = f"Day {days_elapsed} Journal - {entry_date.strftime('%A, %B %d, %Y')}"
+    subject = f"Day {days_elapsed}"
     to_email = config["company"]["email_list"]
     
     send_email(subject, content, to_email)
