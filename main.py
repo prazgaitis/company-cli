@@ -1,72 +1,66 @@
 #!/usr/bin/env uv run python
 import typer
-import yaml
 import subprocess
 import tempfile
 import smtplib
 import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
 from rich.console import Console
-from rich.spinner import Spinner
-import threading
 import time
-
-# Load environment variables from .env file
-load_dotenv()
+from journal_entry import JournalEntry
+from config import load_config
 
 app = typer.Typer()
-
-def load_config():
-    config_path = Path("config.yaml")
-    if not config_path.exists():
-        typer.echo("Error: config.yaml not found", err=True)
-        raise typer.Exit(1)
-    
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
 
 @app.command()
 def day():
     """Show what day it is since company start."""
+    entry = JournalEntry()
+    typer.echo(f"Today is Day {entry.day()}")
+
+@app.command()
+def read(date: str = typer.Option(None, help="Date in YYYY-MM-DD format, defaults to today")):
+    """Read today's journal entry."""
+    entry = JournalEntry(date)
+    typer.echo(entry.read())
+
+@app.command()
+def edit(date: str = typer.Option(None, help="Date in YYYY-MM-DD format, defaults to today"), editor: str = "vim"):
+    """Edit today's journal entry."""
+    entry = JournalEntry(date)
+    entry.open(editor)
+
+@app.command()
+def open_entry(date: str = typer.Option(None, help="Date in YYYY-MM-DD format, defaults to today")):
+    """Open today's journal entry."""
+    entry = JournalEntry(date)
+    entry.open()
+
+@app.command()
+def open_dir():
+    """Open the journal directory."""
     config = load_config()
-    start_date_str = config["company"]["start_date"]
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-    today = datetime.now().date()
-    
-    days_elapsed = (today - start_date).days
-    typer.echo(f"Today is Day {days_elapsed}")
+    journal_dir = Path(config.get("journal", {}).get("entries_dir", "journal_entries"))
+    subprocess.run(["open", journal_dir])
 
 @app.command()
 def journal(entry: str = typer.Argument(None, help="Journal entry text")):
     """Write a quick journal entry."""
-    config = load_config()
-    entries_dir = Path(config.get("journal", {}).get("entries_dir", "journal_entries"))
-    entries_dir.mkdir(exist_ok=True)
-    
-    today = datetime.now()
-    filename = f"{today.strftime('%Y-%m-%d')}.txt"
-    entry_file = entries_dir / filename
+    journal_entry = JournalEntry()
     
     if entry is None:
         # Open vim with existing content or empty file
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.txt', delete=False) as temp_file:
             # Load existing content if file exists, otherwise create title
+            entry_file = journal_entry.file_path()
             if entry_file.exists():
                 with open(entry_file, 'r') as f:
                     temp_file.write(f.read())
             else:
                 # Create title with day number
-                config = load_config()
-                start_date_str = config["company"]["start_date"]
-                start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                today_date = today.date()
-                days_elapsed = (today_date - start_date).days
-                
-                title = f"Day {days_elapsed} - {today.strftime('%A, %B %d, %Y')}\n\n"
+                title = journal_entry.title()
                 temp_file.write(title)
             temp_file.flush()
             
@@ -80,9 +74,8 @@ def journal(entry: str = typer.Argument(None, help="Journal entry text")):
             
             if content:
                 # Write back to the journal file
-                with open(entry_file, 'w') as f:
-                    f.write(content)
-                typer.echo(f"Journal updated: {entry_file}")
+                journal_entry.write(content)
+                typer.echo(f"Journal updated: {journal_entry.file_path()}")
             else:
                 typer.echo("No content saved")
                 
@@ -90,13 +83,9 @@ def journal(entry: str = typer.Argument(None, help="Journal entry text")):
         Path(temp_file.name).unlink()
     else:
         # Original behavior for command line entries
-        timestamp = today.strftime("%H:%M:%S")
-        entry_text = f"[{timestamp}] {entry}\n"
+        journal_entry.append(entry)
         
-        with open(entry_file, "a") as f:
-            f.write(entry_text)
-        
-        typer.echo(f"Journal entry added to {entry_file}")
+        typer.echo(f"Journal entry added to {journal_entry.file_path()}")
 
 def send_email(subject: str, body: str, to_email: str):
     """Send email using Gmail SMTP."""
@@ -150,31 +139,15 @@ def send_email(subject: str, body: str, to_email: str):
 def send_journal(date: str = typer.Option(None, help="Date in YYYY-MM-DD format, defaults to today")):
     """Send journal entry for a specific date via email."""
     config = load_config()
-    entries_dir = Path(config.get("journal", {}).get("entries_dir", "journal_entries"))
+    entry = JournalEntry(date)
     
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    
-    entry_file = entries_dir / f"{date}.txt"
-    
-    if not entry_file.exists():
-        typer.echo(f"No journal entry found for {date}", err=True)
-        raise typer.Exit(1)
-    
-    with open(entry_file, 'r') as f:
-        content = f.read()
+    content = entry.read()
     
     if not content.strip():
         typer.echo(f"Journal entry for {date} is empty", err=True)
         raise typer.Exit(1)
     
-    # Get day number for subject
-    start_date_str = config["company"]["start_date"]
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-    entry_date = datetime.strptime(date, "%Y-%m-%d").date()
-    days_elapsed = (entry_date - start_date).days
-    
-    subject = f"Day {days_elapsed}"
+    subject = entry.email_subject()
     to_email = config["company"]["email_list"]
     
     send_email(subject, content, to_email)
